@@ -1,7 +1,567 @@
 <!DOCTYPE html>
-<html>
-    <body>
-        <h1>Hello World</h1>
-        <p>I'm hosted with GitHub Pages.</p>
-    </body>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NarraBot — Reddit to Short Video</title>
+
+  <!-- Puter SDK — loaded first, sync -->
+  <script src="https://js.puter.com/v2/"></script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=Syne:wght@400;700;800&display=swap" rel="stylesheet" />
+
+  <!-- NOTE: FFmpeg is loaded dynamically in JS below to guarantee
+       the global FFmpeg object exists before we ever call createFFmpeg().
+       Loading it as a <script> tag in <head> caused race conditions. -->
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #080808;
+      --surface: #111111;
+      --border:  #222222;
+      --accent:  #fff44f;
+      --accent2: #ff3c5f;
+      --text:    #f0f0f0;
+      --muted:   #555;
+      --radius:  10px;
+      --mono:    'DM Mono', monospace;
+      --head:    'Bebas Neue', sans-serif;
+    }
+
+    html, body { min-height: 100vh; background: var(--bg); color: var(--text); font-family: var(--mono); }
+
+    body::after {
+      content: ''; position: fixed; inset: 0;
+      background: repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(255,255,255,.012) 2px,rgba(255,255,255,.012) 4px);
+      pointer-events: none; z-index: 999;
+    }
+
+    .wrap { max-width: 680px; margin: 0 auto; padding: 3.5rem 1.5rem 4rem; }
+
+    header { margin-bottom: 3rem; }
+
+    .tag {
+      display: inline-flex; align-items: center; gap: .4rem;
+      background: var(--accent); color: #080808;
+      font-family: var(--mono); font-size: .65rem; font-weight: 500;
+      letter-spacing: .14em; text-transform: uppercase;
+      padding: .28rem .7rem; border-radius: 3px; margin-bottom: 1rem;
+    }
+    .tag::before { content: ''; width: 6px; height: 6px; background: #080808; border-radius: 50%; animation: blink 1.2s step-end infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    h1 { font-family: var(--head); font-size: clamp(3rem,8vw,5.5rem); line-height: .95; letter-spacing: .02em; color: #fff; }
+    h1 em { font-style: normal; color: var(--accent); }
+    .sub { margin-top: 1rem; font-size: .78rem; color: var(--muted); letter-spacing: .06em; line-height: 1.6; }
+
+    /* FFmpeg status bar */
+    #ffStatus {
+      margin-bottom: 1rem;
+      padding: .6rem 1rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      font-size: .72rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      transition: all .3s;
+    }
+    #ffStatus.loading { border-color: #333; color: var(--muted); }
+    #ffStatus.ready   { border-color: #1a3a1a; color: #4caf50; background: rgba(76,175,80,.04); }
+    #ffStatus.failed  { border-color: #3a1a1a; color: var(--accent2); background: rgba(255,60,95,.04); }
+    #ffStatusDot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    #ffStatus.loading #ffStatusDot { animation: blink 1s step-end infinite; }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2rem; margin-bottom: 1.5rem; }
+    .field-label { font-size: .65rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: .55rem; display: block; }
+    .input-row { display: flex; gap: .6rem; }
+
+    input[type="url"] {
+      flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-family: var(--mono); font-size: .85rem; padding: .8rem 1rem;
+      outline: none; transition: border-color .2s, box-shadow .2s;
+    }
+    input[type="url"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255,244,79,.07); }
+    input::placeholder { color: var(--muted); }
+
+    #submitBtn {
+      background: var(--accent); color: #080808; border: none; border-radius: 6px;
+      font-family: var(--head); font-size: 1.1rem; letter-spacing: .06em;
+      padding: .8rem 1.6rem; cursor: pointer; transition: background .15s, transform .1s; white-space: nowrap;
+    }
+    #submitBtn:hover  { background: #fffa80; }
+    #submitBtn:active { transform: scale(.97); }
+    #submitBtn:disabled { background: #2a2a10; color: #555522; cursor: not-allowed; }
+
+    .pipeline { display: flex; flex-direction: column; gap: .5rem; margin-top: 1.8rem; }
+
+    .step {
+      display: flex; align-items: center; gap: .9rem;
+      padding: .7rem 1rem; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg); font-size: .78rem; color: var(--muted); transition: all .3s;
+    }
+    .step.active { border-color: var(--accent);  color: var(--accent);  background: rgba(255,244,79,.04); }
+    .step.done   { border-color: #1a3a1a;         color: #4caf50;        background: rgba(76,175,80,.04);  }
+    .step.error  { border-color: #3a1a1a;         color: var(--accent2); background: rgba(255,60,95,.04);  }
+
+    .step-icon { font-size: 1rem; width: 1.2rem; text-align: center; flex-shrink: 0; }
+    .step-icon.spin { animation: spin .7s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .step-text { flex: 1; }
+    .step-time { font-size: .65rem; color: var(--muted); opacity: .6; }
+
+    .prog-wrap { margin-top: 1.4rem; height: 2px; background: var(--border); border-radius: 99px; overflow: hidden; opacity: 0; transition: opacity .3s; }
+    .prog-wrap.show { opacity: 1; }
+    .prog-fill { height: 100%; background: var(--accent); border-radius: 99px; width: 0%; transition: width .6s ease; }
+
+    #previewPanel { display: none; }
+    #previewPanel.show { display: block; animation: fadeUp .4s ease both; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+
+    .preview-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .preview-header { padding: .8rem 1.2rem; border-bottom: 1px solid var(--border); font-size: .65rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+    .preview-header span { color: #4caf50; }
+
+    .phone-wrap { display: flex; justify-content: center; padding: 2rem; background: #0c0c0c; }
+    .phone { width: 220px; height: 391px; background: #000; border-radius: 28px; border: 2px solid #333; overflow: hidden; position: relative; box-shadow: 0 20px 60px rgba(0,0,0,.8), inset 0 0 0 1px #444; }
+    .phone::before { content: ''; position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 60px; height: 6px; background: #1a1a1a; border-radius: 99px; z-index: 10; }
+    #videoEl { width: 100%; height: 100%; object-fit: cover; display: none; }
+    .phone-placeholder { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .5rem; color: #333; font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; }
+    .phone-placeholder .icon { font-size: 2rem; }
+
+    #scriptBox { padding: 1.2rem; border-top: 1px solid var(--border); font-size: .75rem; line-height: 1.8; color: #888; max-height: 160px; overflow-y: auto; white-space: pre-wrap; }
+    #scriptBox::-webkit-scrollbar { width: 4px; }
+    #scriptBox::-webkit-scrollbar-track { background: var(--border); }
+    #scriptBox::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 99px; }
+
+    .actions { padding: 1rem 1.2rem; border-top: 1px solid var(--border); display: flex; gap: .6rem; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; gap: .4rem; border-radius: 6px; font-family: var(--head); font-size: .95rem; letter-spacing: .05em; padding: .55rem 1.1rem; cursor: pointer; text-decoration: none; border: none; transition: all .15s; }
+    .btn-primary { background: var(--accent); color: #080808; }
+    .btn-primary:hover { background: #fffa80; }
+    .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    footer { margin-top: 2.5rem; text-align: center; font-size: .65rem; color: #333; letter-spacing: .1em; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="tag">NarraBot Studio</div>
+    <h1>REDDIT<br>TO <em>SHORT</em><br>VIDEO</h1>
+    <p class="sub">Paste a Reddit post URL. Get a vertical short-form video<br>with karaoke-style word-by-word subtitles. Powered by Puter AI.</p>
+  </header>
+
+  <!-- FFmpeg load status — visible to user -->
+  <div id="ffStatus" class="loading">
+    <span id="ffStatusDot"></span>
+    <span id="ffStatusText">Loading video renderer…</span>
+  </div>
+
+  <div class="card">
+    <label class="field-label" for="urlInput">Reddit Post URL</label>
+    <div class="input-row">
+      <input type="url" id="urlInput" placeholder="https://www.reddit.com/r/..." autocomplete="off" spellcheck="false" />
+      <button id="submitBtn" disabled>LOADING…</button>
+    </div>
+
+    <div class="pipeline">
+      <div class="step" id="s1"><span class="step-icon">○</span><span class="step-text">Generate narration script from post</span><span class="step-time" id="t1"></span></div>
+      <div class="step" id="s2"><span class="step-icon">○</span><span class="step-text">Convert script to speech audio</span><span class="step-time" id="t2"></span></div>
+      <div class="step" id="s3"><span class="step-icon">○</span><span class="step-text">Build word-by-word subtitle timing</span><span class="step-time" id="t3"></span></div>
+      <div class="step" id="s4"><span class="step-icon">○</span><span class="step-text">Render video with FFmpeg</span><span class="step-time" id="t4"></span></div>
+      <div class="step" id="s5"><span class="step-icon">○</span><span class="step-text">Save to Puter cloud storage</span><span class="step-time" id="t5"></span></div>
+    </div>
+
+    <div class="prog-wrap" id="progWrap">
+      <div class="prog-fill" id="progFill"></div>
+    </div>
+  </div>
+
+  <div id="previewPanel">
+    <div class="preview-card">
+      <div class="preview-header">Output Preview <span>✓ Ready</span></div>
+      <div class="phone-wrap">
+        <div class="phone">
+          <div class="phone-placeholder" id="phonePlaceholder"><span class="icon">▶</span><span>Video Ready</span></div>
+          <video id="videoEl" controls playsinline></video>
+        </div>
+      </div>
+      <div id="scriptBox"></div>
+      <div class="actions">
+        <a class="btn btn-primary"  id="downloadVideoBtn"  href="#" download="narrabot_video.mp4">⬇ Download Video</a>
+        <a class="btn btn-ghost"    id="downloadScriptBtn" href="#" download="narration_script.txt">⬇ Script .txt</a>
+        <button class="btn btn-ghost" id="copyBtn">⎘ Copy Script</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>Puter AI · FFmpeg.wasm v0.10 (single-thread) · No backend required</footer>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  NarraBot — inline JS
+//
+//  FFmpeg loading strategy:
+//  1. Dynamically inject the FFmpeg CDN <script> tag
+//  2. Wait for its onload event (guarantees window.FFmpeg exists)
+//  3. Call createFFmpeg() + ff.load() (downloads the .wasm core)
+//  4. Only then enable the submit button
+//  This eliminates all race conditions from static <script> tags.
+// ═══════════════════════════════════════════════════════════════
+
+const $ = id => document.getElementById(id);
+
+// ── DOM refs ──────────────────────────────────────────────────
+const urlInput         = $('urlInput');
+const submitBtn        = $('submitBtn');
+const progWrap         = $('progWrap');
+const progFill         = $('progFill');
+const previewPanel     = $('previewPanel');
+const phonePlaceholder = $('phonePlaceholder');
+const videoEl          = $('videoEl');
+const scriptBox        = $('scriptBox');
+const downloadVideoBtn = $('downloadVideoBtn');
+const downloadScriptBtn= $('downloadScriptBtn');
+const copyBtn          = $('copyBtn');
+const ffStatus         = $('ffStatus');
+const ffStatusText     = $('ffStatusText');
+
+// ── FFmpeg state ──────────────────────────────────────────────
+let _ff        = null;   // the loaded FFmpeg instance
+let _ffReady   = false;  // true only after ff.load() resolves
+
+function setFFStatus(state, msg) {
+  ffStatus.className = state;
+  ffStatusText.textContent = msg;
+}
+
+// ── Load FFmpeg dynamically ───────────────────────────────────
+// Returns a Promise that resolves when FFmpeg is fully loaded.
+function loadFFmpeg() {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js';
+
+    script.onload = async () => {
+      try {
+        // window.FFmpeg is now guaranteed to exist
+        const { createFFmpeg } = window.FFmpeg;
+        _ff = createFFmpeg({
+          log: false,
+          corePath: 'https://unpkg.com/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js',
+        });
+
+        setFFStatus('loading', 'Downloading WebAssembly core (one-time, ~8 MB)…');
+        await _ff.load();  // downloads + compiles the .wasm binary
+
+        _ffReady = true;
+        resolve(_ff);
+      } catch (err) {
+        reject(err);
+      }
+    };
+
+    script.onerror = () => reject(new Error('Failed to load FFmpeg script from CDN.'));
+    document.head.appendChild(script);
+  });
+}
+
+// ── Boot sequence ─────────────────────────────────────────────
+// Runs immediately when this <script> block is parsed.
+(async function boot() {
+  setFFStatus('loading', 'Loading video renderer…');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'LOADING…';
+
+  try {
+    await loadFFmpeg();
+    setFFStatus('ready', 'Video renderer ready');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'CREATE';
+  } catch (err) {
+    console.error('FFmpeg load failed:', err);
+    setFFStatus('failed', 'Video renderer failed to load — refresh the page');
+    submitBtn.textContent = 'UNAVAILABLE';
+  }
+})();
+
+// ── Step UI ───────────────────────────────────────────────────
+const STEP_LABELS = [
+  'Generate narration script from post',
+  'Convert script to speech audio',
+  'Build word-by-word subtitle timing',
+  'Render video with FFmpeg',
+  'Save to Puter cloud storage',
+];
+const stepStarts = {};
+
+function stepActive(n) {
+  const el = $('s'+n);
+  el.className = 'step active';
+  const ic = el.querySelector('.step-icon');
+  ic.textContent = '◌'; ic.classList.add('spin');
+  stepStarts[n] = Date.now();
+}
+
+function stepDone(n) {
+  const el = $('s'+n);
+  el.className = 'step done';
+  const ic = el.querySelector('.step-icon');
+  ic.textContent = '✓'; ic.classList.remove('spin');
+  $('t'+n).textContent = ((Date.now()-stepStarts[n])/1000).toFixed(1)+'s';
+}
+
+function stepError(n, msg) {
+  const el = $('s'+n);
+  el.className = 'step error';
+  const ic = el.querySelector('.step-icon');
+  ic.textContent = '✕'; ic.classList.remove('spin');
+  el.querySelector('.step-text').textContent = msg || 'Failed';
+}
+
+function resetSteps() {
+  for (let n = 1; n <= 5; n++) {
+    const el = $('s'+n);
+    el.className = 'step';
+    el.querySelector('.step-icon').textContent = '○';
+    el.querySelector('.step-icon').classList.remove('spin');
+    el.querySelector('.step-text').textContent = STEP_LABELS[n-1];
+    $('t'+n).textContent = '';
+  }
+}
+
+function setProgress(pct) {
+  progWrap.classList.toggle('show', pct > 0);
+  progFill.style.width = pct + '%';
+}
+
+function setBusy(b) {
+  submitBtn.disabled = b;
+  submitBtn.textContent = b ? 'WORKING…' : 'CREATE';
+}
+
+// ── Step 1: Script via Claude ─────────────────────────────────
+async function generateScript(url) {
+  const prompt = `You are a YouTube narration scriptwriter with web browsing ability.
+
+Visit this Reddit post URL and read the full content:
+${url}
+
+Extract the post title and full body text. Ignore usernames, subreddit names, karma, awards, metadata.
+
+Rewrite it as a YouTube voice-over narration script:
+- Natural conversational spoken-word tone
+- Short punchy sentences, varied rhythm
+- NO mention of Reddit, usernames, or any platform
+- YouTube-safe language, no profanity
+- NO bullet points, markdown, headers, or emojis
+- 90 to 120 seconds when read aloud at a natural pace
+- Structure: Hook (1-2 tension sentences) → Main story chronologically → One closing question to audience
+
+Output ONLY the final narration script. No preamble, labels, explanation, or code blocks.`;
+
+  const res = await puter.ai.chat(prompt, { model: 'claude-sonnet-4-6' });
+  if (typeof res === 'string') return res.trim();
+  const c = res?.message?.content ?? res?.content;
+  if (Array.isArray(c)) return c.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+  if (typeof c === 'string') return c.trim();
+  return String(res);
+}
+
+// ── Step 2: TTS ───────────────────────────────────────────────
+async function generateAudio(script) {
+  const result = await puter.ai.txt2speech(script);
+  if (result instanceof Blob)        return result;
+  if (result instanceof ArrayBuffer) return new Blob([result], { type: 'audio/mp3' });
+  if (result?.src)                   return (await fetch(result.src)).blob();
+  if (typeof result === 'string')    return (await fetch(result)).blob();
+  throw new Error('Unrecognised response from puter.ai.txt2speech');
+}
+
+function getAudioDuration(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio(url);
+    a.addEventListener('loadedmetadata', () => { URL.revokeObjectURL(url); resolve(a.duration); });
+    a.addEventListener('error', reject);
+  });
+}
+
+// ── Step 3: Word timings ──────────────────────────────────────
+function buildWordTimings(script, totalSecs) {
+  const words = script.split(/\s+/).filter(Boolean);
+  function syls(w) {
+    w = w.toLowerCase().replace(/[^a-z]/g,'');
+    if (!w) return 1;
+    const v = w.match(/[aeiouy]+/g);
+    let n = v ? v.length : 1;
+    if (w.endsWith('e') && n > 1) n--;
+    return Math.max(1, n);
+  }
+  const sc = words.map(syls);
+  const total = sc.reduce((a,b) => a+b, 0);
+  const out = [];
+  let t = 0.3;
+  for (let i = 0; i < words.length; i++) {
+    const dur = (sc[i] / total) * (totalSecs - 0.5);
+    out.push({ word: words[i], start: t, end: t + dur });
+    t += dur;
+  }
+  return out;
+}
+
+// ── Step 4: FFmpeg render ─────────────────────────────────────
+async function renderVideo(audioBlob, timings) {
+  if (!_ffReady || !_ff) throw new Error('FFmpeg is not ready yet — please wait for the renderer to finish loading.');
+
+  const W = 1080, H = 1920;
+  const dur = timings[timings.length - 1].end + 0.5;
+
+  _ff.FS('writeFile', 'audio.mp3', new Uint8Array(await audioBlob.arrayBuffer()));
+  _ff.FS('writeFile', 'subs.ass',  new TextEncoder().encode(buildASS(timings, W, H)));
+
+  await _ff.run(
+    '-f',  'lavfi',
+    '-i',  `color=c=black:size=${W}x${H}:rate=30:duration=${dur}`,
+    '-i',  'audio.mp3',
+    '-vf', 'ass=subs.ass',
+    '-c:v','libx264', '-preset','ultrafast', '-crf','23',
+    '-c:a','aac',     '-b:a','128k',
+    '-pix_fmt','yuv420p',
+    '-shortest', '-movflags','+faststart',
+    'out.mp4'
+  );
+
+  const data = _ff.FS('readFile', 'out.mp4');
+  ['audio.mp3','subs.ass','out.mp4'].forEach(f => { try { _ff.FS('unlink',f); } catch(_){} });
+  return new Blob([data.buffer], { type: 'video/mp4' });
+}
+
+// ── ASS subtitle builder ──────────────────────────────────────
+function buildASS(timings, W, H) {
+  function ts(s) {
+    const h  = Math.floor(s/3600);
+    const m  = Math.floor((s%3600)/60);
+    const sc = Math.floor(s%60);
+    const cs = Math.floor((s%1)*100);
+    return `${h}:${String(m).padStart(2,'0')}:${String(sc).padStart(2,'0')}.${String(cs).padStart(2,'0')}`;
+  }
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: ${W}
+PlayResY: ${H}
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00000000,&HCC000000,-1,0,0,0,100,100,2,0,1,4,3,5,80,80,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+  const CHUNK = 5;
+  const events = [];
+  for (let i = 0; i < timings.length; i += CHUNK) {
+    const group = timings.slice(i, i + CHUNK);
+    group.forEach((active, idx) => {
+      let line = '';
+      group.forEach((w, j) => {
+        const word = w.word.replace(/[{}\\]/g,'');
+        line += j === idx
+          ? `{\\c&H00FFFF&\\fs82\\b1}${word}{\\c&HFFFFFF&\\fs72\\b0} `
+          : `${word} `;
+      });
+      events.push(`Dialogue: 0,${ts(active.start)},${ts(active.end)},Default,,0,0,0,,${line.trim()}`);
+    });
+  }
+  return header + events.join('\n');
+}
+
+// ── Step 5: Save to Puter FS ──────────────────────────────────
+async function saveToPuter(videoBlob, script) {
+  try { await puter.fs.mkdir('/NarraBot', { recursive: true }); } catch(_) {}
+  await puter.fs.write('/NarraBot/narrabot_video.mp4',   new Uint8Array(await videoBlob.arrayBuffer()), { overwrite: true });
+  await puter.fs.write('/NarraBot/narration_script.txt', script, { overwrite: true });
+}
+
+// ── Main ──────────────────────────────────────────────────────
+submitBtn.addEventListener('click', async () => {
+  const url = urlInput.value.trim();
+  if (!url) return alert('Please enter a Reddit post URL.');
+  if (!/reddit\.com\//i.test(url)) return alert('Please enter a valid Reddit URL.');
+  if (!_ffReady) return alert('The video renderer is still loading. Please wait a moment and try again.');
+
+  setBusy(true);
+  resetSteps();
+  previewPanel.classList.remove('show');
+  setProgress(5);
+
+  let script = '';
+
+  try {
+    stepActive(1);
+    script = await generateScript(url);
+    if (!script || script.length < 60) throw new Error('Script too short — try a different post.');
+    stepDone(1); setProgress(20);
+
+    stepActive(2);
+    const audioBlob = await generateAudio(script);
+    const duration  = await getAudioDuration(audioBlob);
+    stepDone(2); setProgress(42);
+
+    stepActive(3);
+    const timings = buildWordTimings(script, duration);
+    stepDone(3); setProgress(54);
+
+    stepActive(4);
+    const videoBlob = await renderVideo(audioBlob, timings);
+    stepDone(4); setProgress(80);
+
+    stepActive(5);
+    await saveToPuter(videoBlob, script);
+    stepDone(5); setProgress(100);
+
+    const vidUrl    = URL.createObjectURL(videoBlob);
+    const scriptUrl = URL.createObjectURL(new Blob([script], { type: 'text/plain' }));
+
+    videoEl.src = vidUrl;
+    videoEl.style.display = 'block';
+    phonePlaceholder.style.display = 'none';
+    downloadVideoBtn.href  = vidUrl;
+    downloadScriptBtn.href = scriptUrl;
+    scriptBox.textContent  = script;
+    previewPanel.classList.add('show');
+
+  } catch(err) {
+    console.error(err);
+    for (let n = 1; n <= 5; n++) {
+      if ($('s'+n).classList.contains('active')) stepError(n, err.message);
+    }
+    setProgress(0);
+  } finally {
+    setBusy(false);
+    setTimeout(() => { if (progFill.style.width === '100%') setProgress(0); }, 2000);
+  }
+});
+
+copyBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(scriptBox.textContent);
+    copyBtn.textContent = '✓ Copied!';
+    setTimeout(() => { copyBtn.textContent = '⎘ Copy Script'; }, 2000);
+  } catch { copyBtn.textContent = 'Failed'; }
+});
+
+urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitBtn.click(); });
+</script>
+</body>
 </html>
